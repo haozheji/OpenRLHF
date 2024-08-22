@@ -164,6 +164,7 @@ class RewardDataset(Dataset):
             reject_token["input_ids"],
             reject_token["attention_mask"],
             extra,
+            idx
         )
 
     def collate_fn(self, item_list):
@@ -172,12 +173,14 @@ class RewardDataset(Dataset):
         reject_ids = []
         rejects_masks = []
         extras = []
-        for chosen_id, chosen_mask, reject_id, rejects_mask, extra in item_list:
+        ids = []
+        for chosen_id, chosen_mask, reject_id, rejects_mask, extra, idx in item_list:
             chosen_ids.append(chosen_id)
             chosen_masks.append(chosen_mask)
             reject_ids.append(reject_id)
             rejects_masks.append(rejects_mask)
             extras.append(extra)
+            ids.append(idx)
 
         if self.is_dpo:
             padding_side = "right"
@@ -187,7 +190,7 @@ class RewardDataset(Dataset):
         chosen_masks = zero_pad_sequences(chosen_masks, side=padding_side)
         reject_ids = zero_pad_sequences(reject_ids, side=padding_side, value=self.tokenizer.pad_token_id)
         rejects_masks = zero_pad_sequences(rejects_masks, side=padding_side)
-        return chosen_ids, chosen_masks, reject_ids, rejects_masks, extras
+        return chosen_ids, chosen_masks, reject_ids, rejects_masks, extras, ids
 
     def packing_collate_fn(self, item_list):
         extras = []
