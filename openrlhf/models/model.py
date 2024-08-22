@@ -21,6 +21,7 @@ logger = init_logger(__name__)
 def get_llm_for_sequence_regression(
     model_name_or_path: str,
     model_type: str,
+    cls_class=None, # pass in custom model class
     *,
     bf16=True,
     load_in_4bit=False,
@@ -59,41 +60,42 @@ def get_llm_for_sequence_regression(
     config.normalize_reward = normalize_reward
     config._attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
 
-    try:
-        base_class = AutoModel._model_mapping[type(config)]
-        base_pretrained_class = base_class.__base__
-        if model_type == "reward":
-            cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
-        else:
-            cls_class = _get_critic_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
-    except Exception as e:
-        print("Failed to load from AutoModel, construct from modelling file.")
-        module_file, causal_model_name = config.auto_map["AutoModelForCausalLM"].split(".")
-
-        # special case
-        if causal_model_name == "QWenLMHeadModel":
-            auto_model_name = "QWenModel"
-            pretrained_model_name = "QWenPreTrainedModel"
-        elif causal_model_name == "InternLMForCausalLM":
-            auto_model_name = "InternLMModel"
-            pretrained_model_name = "InternLMPreTrainedModel"
-        else:
-            if "AutoModel" not in config.auto_map:
-                auto_model_name = causal_model_name.split("For")[0] + "Model"
+    if cls_class == None:
+        try:
+            base_class = AutoModel._model_mapping[type(config)]
+            base_pretrained_class = base_class.__base__
+            if model_type == "reward":
+                cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
             else:
-                auto_model_name = config.auto_map["AutoModel"].split(".")[1]
-            pretrained_model_name = causal_model_name.split("For")[0] + "PreTrainedModel"
+                cls_class = _get_critic_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
+        except Exception as e:
+            print("Failed to load from AutoModel, construct from modelling file.")
+            module_file, causal_model_name = config.auto_map["AutoModelForCausalLM"].split(".")
 
-        logger.info(f"BASE_MODEL_CLASS: {auto_model_name}, PRETRAINED_MODEL_CLASS: {pretrained_model_name}")
+            # special case
+            if causal_model_name == "QWenLMHeadModel":
+                auto_model_name = "QWenModel"
+                pretrained_model_name = "QWenPreTrainedModel"
+            elif causal_model_name == "InternLMForCausalLM":
+                auto_model_name = "InternLMModel"
+                pretrained_model_name = "InternLMPreTrainedModel"
+            else:
+                if "AutoModel" not in config.auto_map:
+                    auto_model_name = causal_model_name.split("For")[0] + "Model"
+                else:
+                    auto_model_name = config.auto_map["AutoModel"].split(".")[1]
+                pretrained_model_name = causal_model_name.split("For")[0] + "PreTrainedModel"
 
-        base_pretrained_class = get_class_from_dynamic_module(
-            f"{module_file}.{pretrained_model_name}", model_name_or_path
-        )
-        base_class = get_class_from_dynamic_module(f"{module_file}.{auto_model_name}", model_name_or_path)
-        if model_type == "reward":
-            cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
-        else:
-            cls_class = _get_critic_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
+            logger.info(f"BASE_MODEL_CLASS: {auto_model_name}, PRETRAINED_MODEL_CLASS: {pretrained_model_name}")
+
+            base_pretrained_class = get_class_from_dynamic_module(
+                f"{module_file}.{pretrained_model_name}", model_name_or_path
+            )
+            base_class = get_class_from_dynamic_module(f"{module_file}.{auto_model_name}", model_name_or_path)
+            if model_type == "reward":
+                cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
+            else:
+                cls_class = _get_critic_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
 
     # Note: dschf is defined in function scope to avoid global effects
     # https://huggingface.co/docs/transformers/main_classes/deepspeed#nontrainer-deepspeed-integration
