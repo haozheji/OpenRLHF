@@ -119,7 +119,7 @@ class RewardModelTrainer(ABC):
             loss_mean = 0
             for data in self.train_dataloader:
                 if not self.packing_samples:
-                    chosen_ids, c_mask, reject_ids, r_mask, margin = data
+                    chosen_ids, c_mask, reject_ids, r_mask, margin, ids = data
                     chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
                     c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
                     reject_ids = reject_ids.squeeze(1).to(torch.cuda.current_device())
