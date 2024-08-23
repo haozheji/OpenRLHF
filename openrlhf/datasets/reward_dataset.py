@@ -132,6 +132,9 @@ class RewardDataset(Dataset):
             extra = self.prompt_ids_lens[idx]
         else:
             extra = self.margins[idx]
+        
+        chosen = chosen.strip("\n")
+        reject = reject.strip("\n")
 
         chosen = (prompt + chosen).rstrip("\n")
         if not chosen.endswith(self.tokenizer.eos_token):
