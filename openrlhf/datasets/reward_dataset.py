@@ -10,6 +10,7 @@ from .utils import exist_and_not_none, zero_pad_sequences
 def preprocess_data(
     data,
     input_template=None,
+    output_template=None,
     prompt_key=None,
     chosen_key="chosen",
     rejected_key="rejected",
@@ -39,6 +40,9 @@ def preprocess_data(
             prompt = ""
         chosen = data[chosen_key]
         rejected = data[rejected_key]
+        if output_template:
+            chosen = output_template.format(chosen)
+            rejected = output_template.format(rejected)
 
     # margin loss
     margin = data["margin"] if exist_and_not_none(data, "margin") else 0
@@ -63,6 +67,7 @@ class RewardDataset(Dataset):
         max_length: int,
         strategy,
         input_template=None,
+        output_template=None,
         is_dpo=False,
     ) -> None:
         super().__init__()
@@ -93,7 +98,7 @@ class RewardDataset(Dataset):
 
         for data in tqdm(dataset, desc="Tokenizing", disable=not self.strategy.is_rank_0()):
             prompt, chosen, reject, margin = preprocess_data(
-                data, input_template, prompt_key, chosen_key, rejected_key, apply_chat_template, self.is_dpo
+                data, input_template, output_template, prompt_key, chosen_key, rejected_key, apply_chat_template, self.is_dpo
             )
             if self.is_dpo:
                 prompt_token = self.tokenizer(
