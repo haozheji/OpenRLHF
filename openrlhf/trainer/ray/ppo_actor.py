@@ -10,6 +10,8 @@ import ray
 import torch
 from transformers.trainer import get_scheduler
 
+from datasets import load_dataset
+
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import PPOTrainer
@@ -266,6 +268,7 @@ class ActorModelRayActor(BasePPORole):
         args = self.strategy.args
 
         # prepare datasets
+        '''
         prompts_data = blending_datasets(
             args.prompt_data,
             args.prompt_data_probs,
@@ -275,7 +278,9 @@ class ActorModelRayActor(BasePPORole):
             return_eval=False,
             train_split=args.prompt_split,
         )
-        prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
+        '''
+        #prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
+        prompts_data = load_dataset(args.prompt_data, split=args.prompt_split)
         self.prompts_dataset = PromptDataset(
             prompts_data, self.tokenizer, strategy, input_template=args.input_template
         )
