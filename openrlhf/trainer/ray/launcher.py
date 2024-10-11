@@ -96,32 +96,46 @@ class ReferenceModelRayActor(BasePPORole):
 
 @ray.remote(num_gpus=1)
 class RewardModelRayActor(BasePPORole):
-    def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
+    def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain, cls_class=None, value_head_prefix="value_head"):
         self._setup_distributed(strategy)
         model = get_llm_for_sequence_regression(
             pretrain,
             "reward",
+            cls_class=cls_class,
             normalize_reward=strategy.args.normalize_reward,
             use_flash_attention_2=strategy.args.flash_attn,
             bf16=strategy.args.bf16,
             load_in_4bit=strategy.args.load_in_4bit,
             ds_config=strategy.get_ds_eval_config(offload=strategy.args.ref_reward_offload),
-            value_head_prefix=strategy.args.value_head_prefix,
+            value_head_prefix=value_head_prefix,
         )
         strategy.print(model)
         strategy.print("reward normalization status: {}".format(strategy.args.normalize_reward))
-        strategy.print("mean: {}, std {}".format(model.mean, model.std))
+        try:
+            strategy.print("mean: {}, std {}".format(model.mean, model.std))
+        except:
+            strategy.print("reward model has no mean")
 
         if strategy.args.ref_reward_offload:
             model._offload = True
+        
+        # configure tokenizer
+        self.tokenizer = get_tokenizer(
+            pretrain, model, "left", strategy, use_fast=not strategy.args.disable_fast_tokenizer
+        )
 
         self.model = self.strategy.prepare(model, is_rlhf=True)
         self.model.eval()
+    
+    def get_tokenizer(self):
+        return self.tokenizer
 
-    def forward(self, sequences: torch.LongTensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, sequences: torch.LongTensor, attention_mask: Optional[torch.Tensor] = None, output_key: str = None) -> torch.Tensor:
         device = torch.cuda.current_device()
         with torch.no_grad():
             reward = self.model(sequences.to(device), attention_mask.to(device))
+            if output_key:
+                reward = getattr(reward, output_key)
         return reward.to("cpu")
 
     def empty_cache(self) -> None:
@@ -189,8 +203,8 @@ class PPORayActorGroup:
             ).remote(world_size, 0, 0, None, None)
         else:
             master_actor = self.ray_actor_type.options(
-                num_cpus=num_gpus_per_actor,
-                num_gpus=num_gpus_per_actor,
+                num_cpus=num_gpus_per_actor if self._num_gpus_per_node > 0 else 1,
+                num_gpus=num_gpus_per_actor if self._num_gpus_per_node > 0 else 0,
                 resources=self._resources,
             ).remote(world_size, 0, 0, None, None)
         self._actor_handlers = [master_actor]
@@ -235,7 +249,9 @@ class PPORayActorGroup:
         critic_model_group: "PPORayActorGroup",
         initial_model_group: "PPORayActorGroup",
         reward_model_groups: List["PPORayActorGroup"],
+        oracle_model_group: "PPORayActorGroup" = None,
         remote_rm_urls: List[str] = None,
+        remote_oracle_url: str = None, 
         reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
         vllm_engines: List = None,
     ):
@@ -260,6 +276,8 @@ class PPORayActorGroup:
 
         critic_actors = critic_model_group._actor_handlers
         initial_actors = initial_model_group._actor_handlers
+        if oracle_model_group is not None:
+            oracle_actors = oracle_model_group._actor_handlers
 
         refs = []
         # TODO(wuxibin): actor model choose critic/reward/initial model in a
@@ -267,6 +285,11 @@ class PPORayActorGroup:
         for i, actor in enumerate(self._actor_handlers):
             critic_actor = critic_actors[i % len(critic_actors)]
             initial_actor = initial_actors[i % len(initial_actors)]
+            
+            if oracle_model_group is not None:
+                oracle_actor = oracle_actors[i % len(oracle_actors)]
+            else:
+                oracle_actor = None
 
             reward_actors = []
             if not remote_rm_urls:
@@ -281,9 +304,12 @@ class PPORayActorGroup:
                     reward_model=reward_actors,
                     remote_rm_url=remote_rm_urls,
                     reward_fn=reward_fn,
+                    oracle_reward_model=oracle_actor,
+                    remote_oracle_url=remote_oracle_url,
                     vllm_engines=vllm_engines,
                     # whether this actor should triger corresponding critic model training
                     critic_train_remote=(i < len(critic_actors)),
+                    oracle_eval_remote=(i < len(oracle_actors)) if oracle_actor is not None else False,
                 )
             )
 

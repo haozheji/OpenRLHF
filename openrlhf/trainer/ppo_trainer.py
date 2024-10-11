@@ -58,6 +58,7 @@ class PPOTrainer(ABC):
         critic_optim: Optimizer,
         actor_scheduler,
         critic_scheduler,
+        oracle_reward_model: nn.Module = None,
         ema_beta: float = 0.992,
         init_kl_coef: float = 0.001,
         kl_target: float = None,
@@ -105,6 +106,7 @@ class PPOTrainer(ABC):
         self.reward_model = reward_model
         self.remote_rm_url = remote_rm_url
         self.initial_model = initial_model
+        self.oracle_reward_model = oracle_reward_model
         self.ema_model = ema_model
         self.actor_optim = actor_optim
         self.critic_optim = critic_optim
@@ -165,6 +167,8 @@ class PPOTrainer(ABC):
         args,
         prompts_dataloader,
         pretrain_dataloader,
+        eval_dataloader,
+        oracle_dataloader=None,
         consumed_samples=0,
         num_update_steps_per_episodes=1,
     ) -> None:
@@ -181,8 +185,11 @@ class PPOTrainer(ABC):
 
         self.prompts_dataloader = prompts_dataloader
         self.pretrain_dataloader = pretrain_dataloader
+        self.eval_dataloader = eval_dataloader
+        self.oracle_dataloader = oracle_dataloader
 
         # Restore step and start_epoch
+        #self.strategy.print(f"!!!!!! {num_rollouts_per_episodes} {num_update_steps_per_episodes}")
         steps = consumed_samples // args.rollout_batch_size * update_timesteps + 1
         start_episode = consumed_samples // args.rollout_batch_size // num_rollouts_per_episodes
         consumed_samples = consumed_samples % (num_rollouts_per_episodes * args.rollout_batch_size)
@@ -319,6 +326,8 @@ class PPOTrainer(ABC):
         else:
             aux_loss = 0
         loss = actor_loss + aux_loss * self.args.aux_loss_coef
+        
+        torch.cuda.empty_cache()
         self.strategy.backward(loss, self.actor, self.actor_optim)
 
         # ptx loss
@@ -353,6 +362,8 @@ class PPOTrainer(ABC):
         status = {"policy_loss": actor_loss.item(), "actor_lr": self.actor_scheduler.get_last_lr()[0]}
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
+        # log sequence-level kl
+        status["seq-kl"] = (experience.info["kl"] * experience.info["response_length"]).sum() / experience.info["response_length"].size(0)
         for k, v in experience.info.items():
             if k == "kl":
                 status[k] = (

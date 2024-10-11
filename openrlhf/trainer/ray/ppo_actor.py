@@ -11,6 +11,7 @@ import torch
 from transformers.trainer import get_scheduler
 
 from datasets import load_dataset
+from tqdm import tqdm
 
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor
@@ -29,7 +30,9 @@ class ActorPPOTrainer(PPOTrainer):
         *args,
         vllm_engines: List = None,
         remote_rm_url: List[str] = None,
+        remote_oracle_url: str = None,
         critic_train_remote: bool = False,
+        oracle_eval_remote: bool = False,
         **kwargs,
     ):
         """PPOTrainer for ray.
@@ -40,8 +43,10 @@ class ActorPPOTrainer(PPOTrainer):
         """
         super().__init__(*args, **kwargs)
         self.remote_rm_url = remote_rm_url
+        self.remote_oracle_url = remote_oracle_url
         self.vllm_engines = vllm_engines
         self.critic_train_remote = critic_train_remote
+        self.oracle_eval_remote = oracle_eval_remote
 
         self.experience_maker = RemoteExperienceMaker(
             self.actor,
@@ -55,6 +60,8 @@ class ActorPPOTrainer(PPOTrainer):
             self.remote_rm_url,
             self.reward_fn,
             vllm_engines=self.vllm_engines,
+            oracle_reward_model=self.oracle_reward_model,
+            remote_oracle_url=self.remote_oracle_url
         )
 
         # Create torch group with deepspeed rank 0 and all vllm ranks
@@ -118,20 +125,41 @@ class ActorPPOTrainer(PPOTrainer):
         self.experience_maker.flush()
         torch.distributed.barrier()
 
-        # 2. triger remote critic model training
+        # 2. trigger remote critic model training
         if self.critic_train_remote:
             critic_status_ref = self.critic.fit.remote()
+        
 
+        status = {}
+        
         # 3. actor model training
         if global_steps > self.freezing_actor_steps:
-            status = super().ppo_train(global_steps)
+            status.update(super().ppo_train(global_steps))
 
             # 4. broadcast weights to vllm engines
             if self.vllm_engines is not None:
                 torch.distributed.barrier()
                 self._broadcast_to_vllm()
-        else:
-            status = {}
+
+        # 3.5 evaluating oracle reward
+        if self.oracle_eval_remote or self.remote_oracle_url:
+            if global_steps % self.strategy.args.oracle_eval_steps == 0 and self.eval_dataloader is not None:
+                # 3.5.5 trigger oracle reward model evaluation
+                torch.distributed.barrier()
+                oracle_reward_ref = self.experience_maker.eval_oracle_reward(self.eval_dataloader, global_steps, **self.generate_kwargs)
+        
+                # 3.5.6 gather oracle reward
+                oracle_reward_mean = self.experience_maker.gather_oracle_reward(oracle_reward_ref)
+                self.strategy.print(f"Oracle reward {oracle_reward_mean:.4f} @{global_steps} step")
+                status["oracle_reward"] = oracle_reward_mean
+        
+        # 3.7. evaluating constraint
+        if global_steps % self.strategy.args.constraint_eval_steps == 0 and self.oracle_dataloader is not None:
+            torch.distributed.barrier()
+            orc_seq_kl, orc_seq_nll = self.experience_maker.eval_constraint(self.oracle_dataloader, global_steps, **self.generate_kwargs)
+            status["oracle_seq_kl"] = orc_seq_kl
+            status["oracle_seq_nll"] = orc_seq_nll
+            status["oracle_seq_kl+nll"] = orc_seq_kl + orc_seq_nll
 
         # 5. wait remote critic model training done
         if self.critic_train_remote:
@@ -227,6 +255,7 @@ class ActorModelRayActor(BasePPORole):
 
         # configure scheduler
         self.num_update_steps_per_episodes = len(self.prompts_dataset) // args.train_batch_size * args.max_epochs
+        strategy.print("Number of update steps per episode: {}, number of prompts: {}".format(self.num_update_steps_per_episodes, len(self.prompts_dataset)))
         max_steps = math.ceil(args.num_episodes * self.num_update_steps_per_episodes)
         self.max_steps = max_steps
 
@@ -318,6 +347,43 @@ class ActorModelRayActor(BasePPORole):
             )
         else:
             self.pretrain_dataloader = None
+        
+        # prepare eval_data
+        if args.eval_split is not None:
+            eval_data = load_dataset(args.prompt_data, split=args.eval_split)
+            self.eval_dataset = PromptDataset(
+                eval_data, self.tokenizer, strategy, input_template=args.input_template,
+                return_raw=True,
+            )
+            self.eval_dataloader = strategy.setup_dataloader(
+                    self.eval_dataset, args.micro_eval_batch_size, pin_memory=False, shuffle=False
+                    )
+        else:
+            self.eval_dataloader = None
+        
+        # prepare oracle_data
+        if args.oracle_data:
+            oracle_data = load_dataset(args.oracle_data, split=args.oracle_split)
+            oracle_dataset = SFTDataset(
+                oracle_data.select(range(min(len(oracle_data), args.max_epochs * len(self.prompts_dataset)))),
+                self.tokenizer,
+                args.prompt_max_len + args.generate_max_len,
+                strategy,
+                input_template=args.input_template,
+                pretrain_mode=False,
+                prompt_max_length=args.prompt_max_len,
+                prompt_align_right=True,
+            )
+            self.oracle_dataloader = strategy.setup_dataloader(
+                        oracle_dataset,
+                        args.micro_eval_batch_size,
+                        pin_memory=False, 
+                        shuffle=False,
+                        collate_fn=oracle_dataset.collate_fn,
+                    )
+        else:
+            self.oracle_dataloader = None
+
 
     def max_steps(self):
         """Return the maximum number of steps."""
@@ -330,8 +396,11 @@ class ActorModelRayActor(BasePPORole):
         reward_model: List[ray.actor.ActorHandle],
         remote_rm_url: List[str] = None,
         reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
+        oracle_reward_model: ray.actor.ActorHandle = None,
+        remote_oracle_url: str = None,
         vllm_engines: List[ray.actor.ActorHandle] = None,
         critic_train_remote: bool = False,
+        oracle_eval_remote: bool = False,
     ):
         """Train actor model with prompt datasets."""
         strategy = self.strategy
@@ -344,6 +413,7 @@ class ActorModelRayActor(BasePPORole):
             critic_model,
             reward_model,
             initial_model,
+            oracle_reward_model=oracle_reward_model,
             ema_model=self.ema_model,
             actor_optim=None,
             critic_optim=None,
@@ -357,6 +427,8 @@ class ActorModelRayActor(BasePPORole):
             micro_rollout_batch_size=args.micro_rollout_batch_size,
             gradient_checkpointing=args.gradient_checkpointing,
             critic_train_remote=critic_train_remote,
+            oracle_eval_remote=oracle_eval_remote,
+            remote_oracle_url=remote_oracle_url,
             tokenizer=self.tokenizer,
             prompt_max_len=args.prompt_max_len,
             value_clip=args.value_clip,
@@ -388,6 +460,8 @@ class ActorModelRayActor(BasePPORole):
             args,
             self.prompts_dataloader,
             self.pretrain_dataloader,
+            self.eval_dataloader,
+            self.oracle_dataloader,
             self.consumed_samples,
             self.num_update_steps_per_episodes,
         )

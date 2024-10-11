@@ -10,10 +10,12 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
+from openrlhf.models import GPTLMLoss
 from openrlhf.models.actor import Actor
-from openrlhf.models.utils import compute_reward, masked_mean
+from openrlhf.models.utils import compute_reward, masked_mean, compute_approx_kl
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
+from openrlhf.datasets.utils import alter_template_texts
 
 logger = init_logger(__name__)
 
@@ -228,9 +230,173 @@ class NaiveExperienceMaker(ABC):
 
 
 class RemoteExperienceMaker(NaiveExperienceMaker):
-    def __init__(self, *args, vllm_engines: List = None, **kwargs):
+    def __init__(self, *args, vllm_engines: List = None, 
+                oracle_reward_model: nn.Module = None, 
+                remote_oracle_url: str = None,
+                **kwargs):
         super().__init__(*args, **kwargs)
         self.vllm_engines = vllm_engines
+        self.oracle_reward_model = oracle_reward_model
+        self.remote_oracle_url = remote_oracle_url
+    
+    @torch.no_grad()
+    def eval_constraint(self, dataloader, global_step, **generate_kwargs):
+        self.actor.eval()
+        device = torch.cuda.current_device()
+
+
+        pbar = tqdm(dataloader,
+                    desc=f"Evaluating constraint @{global_step} step",
+                    disable=not self.strategy.is_rank_0(),)
+        
+        
+        mle_fn = GPTLMLoss()
+
+        seq_nlls = []
+        seq_kls = []
+        for (prompt_lens, input_ids, _, info) in pbar:
+
+            # generate sequence
+            prompts = info["input"]
+
+            sequences, attention_mask, action_mask, output_texts = (
+                self._generate_local(prompts, **generate_kwargs)
+                if self.vllm_engines is None
+                else self._generate_vllm(prompts, **generate_kwargs)
+            )
+
+            num_actions = action_mask.size(1)
+            sequences_cpu, attention_mask_cpu, action_mask_cpu = (
+                sequences.to("cpu"),
+                attention_mask.to("cpu"),
+                action_mask.to("cpu"),
+            )
+
+            # init action log probs
+            if self.strategy.args.colocate_actor_ref:
+                torch.cuda.empty_cache()
+                ray.get([self.initial_model.empty_cache.remote()])
+
+            base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu, num_actions, attention_mask_cpu)
+
+            base_action_log_probs = ray.get(base_action_log_probs_ref).to(device)
+            if self.strategy.args.colocate_actor_ref:
+                ray.get([self.initial_model.empty_cache.remote()])
+
+            # actor action log probs
+            action_log_probs = self.actor(sequences, num_actions, attention_mask)
+            
+            seq_kl = compute_approx_kl(action_log_probs, base_action_log_probs, action_mask).sum(-1)
+
+
+
+            # calculate action mle loss
+            input_ids = input_ids.squeeze(1).to(torch.cuda.current_device())
+            
+            input_ids, attention_mask, action_mask = self.actor.process_sequences(
+                input_ids, max(prompt_lens), self.tokenizer.eos_token_id, self.tokenizer.pad_token_id
+            )
+
+            # prepare action mask
+            num_actions = action_mask.size(1)
+            action_log_probs = self.actor(input_ids, num_actions, attention_mask)
+
+            seq_nll = - (action_log_probs * action_mask).sum(-1)
+
+            seq_nlls.append(seq_nll)
+            seq_kls.append(seq_kl)
+        
+        self.actor.train()  # reset model state
+
+        seq_nlls = torch.cat(seq_nlls, dim=0)
+        seq_kls = torch.cat(seq_kls, dim=0)
+
+        return seq_kls.mean(), seq_nlls.mean()
+
+
+
+
+
+
+
+
+            
+
+
+    
+    @torch.no_grad()
+    def eval_oracle_reward(self, dataloader, global_step, **generate_kwargs):
+        pbar = tqdm(dataloader,
+                    desc=f"Evaluating oracle reward @{global_step} step",
+                    disable=not self.strategy.is_rank_0(),)
+
+        if "ArmoRM" in self.strategy.args.oracle_pretrain:
+            output_key = "score"
+        else:
+            output_key = None
+
+        refs = []
+        for (eval_prompts, raw_prompts) in pbar:
+            self.strategy.print(eval_prompts[0], len(eval_prompts))
+            self.strategy.print(raw_prompts[0], len(raw_prompts))
+            oracle_reward = self.eval_oracle_reward_batch(eval_prompts, raw_prompts, output_key=output_key, **generate_kwargs)
+            refs.append(oracle_reward)
+        return refs 
+
+    def gather_oracle_reward(self, refs):
+        refs = ray.get(refs)
+        oracle_reward_mean = 0
+        count = 0 
+        for oracle_reward in refs:
+            oracle_reward_mean += oracle_reward.sum().item()
+            count += oracle_reward.numel()
+        oracle_reward_mean /= count
+        return oracle_reward_mean
+    
+    
+    @torch.no_grad()
+    def eval_oracle_reward_batch(self, prompts: Union[str, List[str]], raw_prompts, output_key: str = None, **generate_kwargs):
+        #self.actor.eval()
+        device = torch.cuda.current_device()
+
+        if self.oracle_reward_model is None and not self.remote_oracle_url:
+            raise RuntimeError("Try to evaluate oracle reward, but oracle reward model is None!")
+
+        # generate sequence
+        start = time.time()
+        sequences, attention_mask, action_mask, output_texts = (
+            self._generate_local(prompts, **generate_kwargs)
+            if self.vllm_engines is None
+            else self._generate_vllm(prompts, **generate_kwargs)
+        )
+        generate_time = time.time() - start
+
+        # pre-truncate input and output 
+        texts = []
+        for raw_prompt, output_text in zip(raw_prompts, output_texts):
+            trunc_prompt = self.tokenizer.decode(self.tokenizer.encode(raw_prompt)[:self.strategy.args.prompt_max_len], skip_special_tokens=True).strip()
+            trunc_output = self.tokenizer.decode(self.tokenizer.encode(output_text)[:self.strategy.args.generate_max_len], skip_special_tokens=True).strip()
+            texts.append(self.strategy.args.oracle_template.format(trunc_prompt, trunc_output))
+
+        #texts = [self.strategy.args.oracle_template.format(raw_prompt, output_text) for raw_prompt, output_text in zip(raw_prompts, output_texts)]
+
+        # evaluate oracle reward
+        if not self.remote_oracle_url:
+            tokenizer = ray.get(self.oracle_reward_model.get_tokenizer.remote()),
+            inputs = tokenizer(texts, 
+                                max_length=self.strategy.args.prompt_max_len + self.strategy.args.generate_max_len,
+                                padding=True, 
+                                truncation=True, 
+                                return_tensors="pt",
+                                add_special_tokens=True)
+            
+            oracle_reward = self.oracle_reward_model.forward.remote(inputs["input_ids"], inputs["attention_mask"], output_key)
+
+        else:
+            oracle_reward = remote_rm_fn_ray.remote(self.remote_oracle_url, queries=texts)
+        
+        return oracle_reward
+
 
     @torch.no_grad()
     def make_experience(self, prompts: Union[str, List[str]], **generate_kwargs) -> Experience:
@@ -239,7 +405,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # generate sequence
         start = time.time()
-        sequences, attention_mask, action_mask = (
+        sequences, attention_mask, action_mask, texts = (
             self._generate_local(prompts, **generate_kwargs)
             if self.vllm_engines is None
             else self._generate_vllm(prompts, **generate_kwargs)
@@ -254,6 +420,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         )
 
         # init log probs
+        if self.strategy.args.colocate_actor_ref:
+            torch.cuda.empty_cache()
+            ray.get([self.initial_model.empty_cache.remote()])
         base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu, num_actions, attention_mask_cpu)
 
         # values
@@ -280,6 +449,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
                 r = remote_rm_fn_ray.remote(rm, queries=queries)
                 r_refs.append(r)
+
 
         # log probs
         start = time.time()
@@ -393,7 +563,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         pad_token_id, eos_token_id = self.tokenizer.pad_token_id, self.tokenizer.eos_token_id
         sequences = []
-        for output in outputs:
+        output_texts = []
+        for prompt, output in zip(prompts, outputs):
             # left padding input
             input_len = len(output.prompt_token_ids)
             input_ids = [pad_token_id] * (max_input_len - input_len) + list(output.prompt_token_ids)
@@ -407,12 +578,13 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
             # concat input and output
             sequences.append(input_ids + output_ids)
+            output_texts.append(self.tokenizer.decode(output_ids, skip_special_tokens=True))
 
         sequences = torch.tensor(sequences)
         sequences, attention_mask, action_mask = self.actor.process_sequences(
             sequences, max_input_len, eos_token_id, pad_token_id
         )
-        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda")
+        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda"), output_texts
 
     def flush(self):
         "Ensure all experience has been send to critic"
