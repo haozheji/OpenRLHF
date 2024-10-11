@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from .utils import zero_pad_sequences
+from .utils import zero_pad_sequences, zero_pad_sequences_both_sides
 
 
 def preprocess_data(data, input_template=None, input_key="input", output_key=None, apply_chat_template=None):
@@ -41,15 +41,21 @@ class SFTDataset(Dataset):
         strategy,
         input_template=None,
         pretrain_mode=False,
+        prompt_max_length=1024,
+        prompt_align_right=False,
     ) -> None:
         super().__init__()
         self.prompts = []
+        self.raw_prompts = []
         self.responses = []
         self.prompt_ids_lens = []
         self.tokenizer = tokenizer
         self.strategy = strategy
         self.pretrain_mode = pretrain_mode
+        self.prompt_max_length = prompt_max_length
         self.max_length = max_length
+        self.prompt_align_right = prompt_align_right
+
 
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
@@ -68,30 +74,35 @@ class SFTDataset(Dataset):
                 output_key,
                 apply_chat_template=None if pretrain_mode else apply_chat_template,
             )
+            raw_prompt = data[input_key]
 
             if not self.pretrain_mode:
                 prompt_token = self.tokenizer(
                     prompt,
-                    max_length=self.max_length,
+                    max_length=self.prompt_max_length,
                     padding=False,
                     truncation=True,
                     return_tensors="pt",
                     add_special_tokens=False,
                 )
-                prompt_ids_len = prompt_token["attention_mask"].int().sum().item()
+                #prompt_ids_len = prompt_token["attention_mask"].int().sum().item()
+                trunc_prompt = self.tokenizer.decode(prompt_token["input_ids"][0])
+                prompt_ids_len = len(self.tokenizer.encode(trunc_prompt))
+                #assert(prompt_ids_len == ), (prompt_ids_len, len(self.tokenizer.encode(trunc_prompt)), trunc_prompt)
             else:
                 prompt_ids_len = 0
 
             if not self.pretrain_mode:
                 # filter the sample whose length is greater than max_length (2 for answer length)
-                if prompt_ids_len >= self.max_length - 2:
-                    continue
+                #if prompt_ids_len >= self.prompt_max_length - 2:
+                #    continue
                 if not prompt or not response:
                     continue
 
             self.prompt_ids_lens.append(prompt_ids_len)
-            self.prompts.append(prompt)
+            self.prompts.append(trunc_prompt)
             self.responses.append(response)
+            self.raw_prompts.append(raw_prompt)
 
     def __len__(self):
         length = len(self.prompts)
@@ -100,6 +111,7 @@ class SFTDataset(Dataset):
     def __getitem__(self, idx):
         prompt_ids_len = self.prompt_ids_lens[idx]
         prompt = self.prompts[idx]
+        raw_prompt = self.raw_prompts[idx]
         response = self.responses[idx]
 
         text = (prompt + response).rstrip("\n")
@@ -118,24 +130,35 @@ class SFTDataset(Dataset):
         input_token["input_ids"][0][-1] = self.tokenizer.eos_token_id
         input_token["attention_mask"][0][-1] = True
 
-        info = {"input": prompt, "output": response, "input_length": input_token["attention_mask"].int().sum().item()}
+        info = {"raw_input": raw_prompt, "input": prompt, "output": response, "input_length": input_token["attention_mask"].int().sum().item()}
         return prompt_ids_len, input_token["input_ids"], input_token["attention_mask"], info
 
     def collate_fn(self, item_list):
         prompt_ids_lens = []
         input_ids = []
         attention_masks = []
-        infos = {"input": [], "output": []}
+        infos = {"raw_input": [], "input": [], "output": []}
 
+        max_prompt_len = 0
         for prompt_ids_len, input_id, attention_mask, info in item_list:
             prompt_ids_lens.append(prompt_ids_len)
             input_ids.append(input_id)
             attention_masks.append(attention_mask)
+            infos["raw_input"].append((info["raw_input"]))
             infos["input"].append(info["input"])
             infos["output"].append(info["output"])
 
-        input_ids = zero_pad_sequences(input_ids, "right", self.tokenizer.pad_token_id)
-        attention_masks = zero_pad_sequences(attention_masks, "right")
+            max_prompt_len = max(max_prompt_len, prompt_ids_len)
+
+        
+        if self.prompt_align_right:
+            input_ids = zero_pad_sequences_both_sides(input_ids, max_prompt_len, prompt_ids_lens, self.tokenizer.pad_token_id)
+            attention_masks = zero_pad_sequences_both_sides(attention_masks, max_prompt_len, prompt_ids_lens)
+
+
+        else:
+            input_ids = zero_pad_sequences(input_ids, "right", self.tokenizer.pad_token_id)
+            attention_masks = zero_pad_sequences(attention_masks, "right")
         return prompt_ids_lens, input_ids, attention_masks, infos
 
     def packing_collate_fn(self, item_list):
