@@ -64,6 +64,7 @@ def get_llm_for_sequence_regression(
         try:
             base_class = AutoModel._model_mapping[type(config)]
             base_pretrained_class = base_class.__base__
+            logger.info(f"BASE_CLASS: {base_class}, BASE_PRETRAINED_CLASS: {base_pretrained_class}")
             if model_type == "reward":
                 cls_class = _get_reward_model(base_pretrained_class, base_class, value_head_prefix, packing_samples)
             else:
