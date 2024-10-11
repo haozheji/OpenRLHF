@@ -37,20 +37,20 @@ def conditional_sft_processor(args, objs):
 
 # Rejection Sampling
 # See https://arxiv.org/abs/2307.09288
-def rejection_sampling_processor(args, objs):
+def rejection_sampling_processor(args, objs, input_key="input", output_key="output"):
     out = {}
     for obj in tqdm(objs, desc="Rejection Sampling process...."):
-        input = obj["input"]
-        output = obj["output"]
+        input = obj[input_key]
+        output = obj[output_key]
         reward = float(obj["reward"])
 
         if input not in out:
-            out[input] = {"output": output, "reward": reward}
+            out[input] = {output_key: output, "reward": reward}
         elif reward > out[input]["reward"]:
             out[input]["reward"] = reward
-            out[input]["output"] = output
+            out[input][output_key] = output
 
-    return [{"input": k, "output": v["output"], "reward": v["reward"]} for k, v in out.items()]
+    return [{input_key: k, output_key: v[output_key], "reward": v["reward"]} for k, v in out.items()]
 
 
 # Iterative DPO
