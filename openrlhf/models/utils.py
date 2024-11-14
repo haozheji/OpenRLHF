@@ -58,9 +58,9 @@ def compute_reward(
 
 
 def log_probs_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    log_probs = F.log_softmax(logits, dim=-1)
-    log_probs_labels = log_probs.gather(dim=-1, index=labels.unsqueeze(-1))
-    return log_probs_labels.squeeze(-1)
+    logits = F.log_softmax(logits, dim=-1)
+    logits = logits.gather(dim=-1, index=labels.unsqueeze(-1))
+    return logits.squeeze(-1)
 
 
 def masked_mean(tensor: torch.Tensor, mask: torch.Tensor, dim: int = None) -> torch.Tensor:

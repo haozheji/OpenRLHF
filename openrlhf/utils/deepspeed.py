@@ -244,7 +244,7 @@ class DeepspeedStrategy(ABC):
                             params_to_fetch = _z3_params_to_fetch([param, param_ema])
                             with deepspeed.zero.GatheredParameters(params_to_fetch, enabled=len(params_to_fetch) > 0):
                                 data = param.data.to(device)
-                                param_ema.data.copy_((1 - beta) * data + beta * param_ema.data)
+                                param_ema.data.copy_((1 - beta) * data + beta * param_ema.data.to(device))
 
     def load_model(
         self,

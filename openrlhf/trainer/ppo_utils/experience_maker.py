@@ -102,6 +102,8 @@ class NaiveExperienceMaker(ABC):
         self.strategy = strategy
         self.reward_fn = reward_fn
 
+        # initialize beta
+        self.beta = self.kl_ctl.value
     # tokenizer
     def tokenize_fn(self, texts, max_length, device):
         batch = self.tokenizer(
@@ -147,7 +149,7 @@ class NaiveExperienceMaker(ABC):
 
         reward, kl = compute_reward(
             r,
-            self.kl_ctl.value,
+            self.beta,
             action_log_probs,
             base_action_log_probs,
             action_mask=action_mask,
@@ -312,17 +314,6 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         seq_kls = torch.cat(seq_kls, dim=0)
 
         return seq_kls.mean(), seq_nlls.mean()
-
-
-
-
-
-
-
-
-            
-
-
     
     @torch.no_grad()
     def eval_oracle_reward(self, dataloader, global_step, **generate_kwargs):
@@ -337,8 +328,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         refs = []
         for (eval_prompts, raw_prompts) in pbar:
-            self.strategy.print(eval_prompts[0], len(eval_prompts))
-            self.strategy.print(raw_prompts[0], len(raw_prompts))
+            #self.strategy.print(eval_prompts[0], len(eval_prompts))
+            #self.strategy.print(raw_prompts[0], len(raw_prompts))
             oracle_reward = self.eval_oracle_reward_batch(eval_prompts, raw_prompts, output_key=output_key, **generate_kwargs)
             refs.append(oracle_reward)
         return refs 
@@ -475,7 +466,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         reward, kl = compute_reward(
             r,
-            self.kl_ctl.value,
+            self.beta,
             action_log_probs,
             base_action_log_probs,
             action_mask=action_mask,

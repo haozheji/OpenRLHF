@@ -11,7 +11,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
+from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss, SNR, KL_Variance
 from openrlhf.models.utils import masked_mean
 from openrlhf.utils.distributed_sampler import DistributedSampler
 
@@ -78,6 +78,10 @@ class PPOTrainer(ABC):
         dataloader_pin_memory: bool = True,
         remote_rm_url: str = None,
         reward_fn: Callable[[List[torch.Tensor]], torch.Tensor] = None,
+        alpha: float = 0.9,
+        #alpha_n: float = 0.9,
+        #alpha_l: float = 0.9,
+        fix_beta: bool = False,
         **generate_kwargs,
     ) -> None:
         assert (
@@ -116,8 +120,15 @@ class PPOTrainer(ABC):
         self.actor_loss_fn = PolicyLoss(eps_clip)
         self.critic_loss_fn = ValueLoss(value_clip)
         self.ptx_loss_fn = GPTLMLoss()
-
         self.freezing_actor_steps = getattr(self.args, "freezing_actor_steps", -1)
+
+        self.fix_beta = fix_beta
+        if not self.fix_beta:
+            #self.snr_estimator = SNR(alpha_s, alpha_n, alpha_l, eps_clip)
+            self.variance_estimator = KL_Variance(alpha, eps_clip)
+        else:
+            self.variance_estimator = None 
+            #self.snr_estimator = None 
 
         # Mixtral 8x7b
         self.aux_loss = self.args.aux_loss_coef > 1e-8
@@ -209,8 +220,13 @@ class PPOTrainer(ABC):
                 experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
                 # print prompt/answer in each update step
                 if steps % update_timesteps == 0:
-                    output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)
-                    self.strategy.print(output[0])
+                    #if self.snr_estimator is not None:
+                    #    self.snr_estimator.update()
+
+                    output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=False)
+                    output_skip_special = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)
+                    #self.strategy.print(output[0])
+                    self.strategy.print(output_skip_special[0])
                 self.replay_buffer.append(experience)
 
                 if steps % update_timesteps == 0:
@@ -232,6 +248,8 @@ class PPOTrainer(ABC):
 
                 pbar.update()
                 steps = steps + 1
+            
+            
 
     def ppo_train(self, global_steps=0):
         # replay buffer may be empty at first, we should rebuild at each training
@@ -247,6 +265,7 @@ class PPOTrainer(ABC):
 
         status_list = []
         status_mean = {}
+        eval_experience = None 
         for epoch in range(self.max_epochs):
             pbar = tqdm(
                 dataloader,
@@ -254,8 +273,18 @@ class PPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
             for experience in pbar:
+                # update logprobs before each gradient update 
+                if not self.fix_beta:
+                    if eval_experience is None:
+                        eval_experience = experience
+                    
+                    eval_experience.to_device(device)
+                    self.update_probs(eval_experience)
+                
+                # train policy
                 experience.to_device(device)
                 status = self.training_step(experience, global_steps)
+
 
                 # for DP
                 # weighted mean for kl
@@ -295,6 +324,34 @@ class PPOTrainer(ABC):
                     status_mean[k] += v
             for k in status_mean.keys():
                 status_mean[k] /= len(status_list)
+        
+        # evaluate kl variance
+        
+        # update beta
+        if not self.fix_beta:
+            # calculate action logprobs of the latest policy
+            self.actor.eval()
+            num_actions = eval_experience.action_mask.size(1)
+
+            action_log_probs, output = self.actor(
+                eval_experience.sequences, num_actions, attention_mask=eval_experience.attention_mask, return_output=True
+            )
+            # update latest probs
+            self.variance_estimator.update_probs(action_log_probs.detach())
+            
+            # update variance
+            kl_variance = self.variance_estimator(action_log_probs.detach(), eval_experience.action_log_probs, eval_experience.action_mask)
+            self.variance_estimator.reset_probs()
+
+            # update beta 
+            #self.experience_maker.beta = self.kl_ctl.value * noise.mean() / signal.mean()
+
+            
+
+            status_mean["variance"] = kl_variance.mean()
+            status_mean["beta"] = self.experience_maker.beta
+
+        
         return status_mean
 
     def training_step(self, experience: Experience, global_steps) -> Dict[str, float]:
@@ -303,6 +360,19 @@ class PPOTrainer(ABC):
             status = self.training_step_actor(experience)
         status.update(self.training_step_critic(experience))
         return status
+
+    
+    def update_probs(self, experience: Experience):
+        self.actor.eval()
+
+        num_actions = experience.action_mask.size(1)
+
+        action_log_probs, output = self.actor(
+            experience.sequences, num_actions, attention_mask=experience.attention_mask, return_output=True
+        )
+
+        self.variance_estimator.update_probs(action_log_probs.detach())
+        
 
     def training_step_actor(self, experience: Experience) -> Dict[str, float]:
         self.actor.train()
