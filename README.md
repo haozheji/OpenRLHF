@@ -27,6 +27,8 @@
 
 <span>[ English | <a href="README_zh.md">中文</a> ]</span>
 
+**RM hacking code in `rm_hacking` branch**.
+
 OpenRLHF is a high-performance RLHF framework built on Ray, DeepSpeed and HF Transformers:
 
 - **Simple and easy to use**: OpenRLHF is one of the simplest high-performance RLHF libraries currently available, and compatible with Huggingface models and datasets.
