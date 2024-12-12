@@ -1,0 +1,281 @@
+wandb_version: 1
+
+save_path:
+  desc: null
+  value: ./checkpoint/RM_mistral_uf-UltraRM-13b
+save_steps:
+  desc: null
+  value: -1
+logging_steps:
+  desc: null
+  value: 1
+eval_steps:
+  desc: null
+  value: -1
+ckpt_path:
+  desc: null
+  value: ./ckpt/checkpoints_ppo
+max_ckpt_num:
+  desc: null
+  value: 3
+max_ckpt_mem:
+  desc: null
+  value: 100000000.0
+load_checkpoint:
+  desc: null
+  value: false
+num_episodes:
+  desc: null
+  value: 1
+rollout_batch_size:
+  desc: null
+  value: 768
+micro_rollout_batch_size:
+  desc: null
+  value: 4
+max_epochs:
+  desc: null
+  value: 1
+prompt_max_len:
+  desc: null
+  value: 1024
+generate_max_len:
+  desc: null
+  value: 1024
+max_len:
+  desc: null
+  value: null
+max_samples:
+  desc: null
+  value: 100000
+max_norm:
+  desc: null
+  value: 1.0
+l2:
+  desc: null
+  value: 0.0
+ptx_coef:
+  desc: null
+  value: 0.05
+eps_clip:
+  desc: null
+  value: 0.2
+value_clip:
+  desc: null
+  value: 0.2
+lambd:
+  desc: null
+  value: 0.95
+gamma:
+  desc: null
+  value: 1
+micro_train_batch_size:
+  desc: null
+  value: 2
+train_batch_size:
+  desc: null
+  value: 96
+normalize_reward:
+  desc: null
+  value: true
+top_p:
+  desc: null
+  value: 1.0
+temperature:
+  desc: null
+  value: 1.0
+freezing_actor_steps:
+  desc: null
+  value: -1
+n_samples_per_prompt:
+  desc: null
+  value: 1
+save_value_network:
+  desc: null
+  value: false
+actor_learning_rate:
+  desc: null
+  value: 5.0e-07
+critic_learning_rate:
+  desc: null
+  value: 9.0e-06
+kl_target:
+  desc: null
+  value: null
+init_kl_coef:
+  desc: null
+  value: 0.01
+adam_betas:
+  desc: null
+  value:
+  - 0.9
+  - 0.95
+seed:
+  desc: null
+  value: 42
+local_rank:
+  desc: null
+  value: 0
+zero_stage:
+  desc: null
+  value: 2
+gradient_checkpointing:
+  desc: null
+  value: true
+bf16:
+  desc: null
+  value: true
+enable_ema:
+  desc: null
+  value: false
+zpg:
+  desc: null
+  value: 1
+adam_offload:
+  desc: null
+  value: true
+actor_init_on_gpu:
+  desc: null
+  value: false
+flash_attn:
+  desc: null
+  value: true
+aux_loss_coef:
+  desc: null
+  value: 0
+grad_accum_dtype:
+  desc: null
+  value: null
+disable_trace_cache:
+  desc: null
+  value: false
+gradient_checkpointing_use_reentrant:
+  desc: null
+  value: false
+disable_fast_tokenizer:
+  desc: null
+  value: false
+load_in_4bit:
+  desc: null
+  value: false
+lora_rank:
+  desc: null
+  value: 0
+lora_alpha:
+  desc: null
+  value: 16
+target_modules:
+  desc: null
+  value: all-linear
+lora_dropout:
+  desc: null
+  value: 0
+pretrain:
+  desc: null
+  value: /workspace/jihaozhe/models/Mistral-7B-Instruct-v0.3
+reward_pretrain:
+  desc: null
+  value: checkpoint/RM_mistral_uf-UltraRM-13b
+remote_rm_url:
+  desc: null
+  value: null
+critic_pretrain:
+  desc: null
+  value: checkpoint/RM_mistral_uf-UltraRM-13b
+value_head_prefix:
+  desc: null
+  value: value_head
+prompt_data:
+  desc: null
+  value: /workspace/jihaozhe/rm_hacking/data/uf-UltraRM-13b
+prompt_data_probs:
+  desc: null
+  value: '1.0'
+prompt_split:
+  desc: null
+  value: train[:-1000]
+pretrain_data:
+  desc: null
+  value: null
+pretrain_data_probs:
+  desc: null
+  value: '1.0'
+pretrain_split:
+  desc: null
+  value: train
+input_key:
+  desc: null
+  value: instruction
+input_template:
+  desc: null
+  value: template/mistral.in
+apply_chat_template:
+  desc: null
+  value: false
+use_wandb:
+  desc: null
+  value: 9b9195bb8719975e33f9f0ee70971bd51fe0d331
+wandb_org:
+  desc: null
+  value: null
+wandb_group:
+  desc: null
+  value: null
+wandb_project:
+  desc: null
+  value: rm_hacking
+wandb_run_name:
+  desc: null
+  value: RM_mistral_uf-UltraRM-13b
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.6
+    cli_version: 0.17.6
+    framework: huggingface
+    huggingface_version: 4.44.0
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1724758911
+    t:
+      1:
+      - 1
+      - 5
+      - 11
+      - 30
+      - 49
+      - 51
+      - 53
+      - 55
+      - 71
+      - 98
+      2:
+      - 1
+      - 5
+      - 11
+      - 30
+      - 49
+      - 51
+      - 53
+      - 55
+      - 71
+      - 98
+      3:
+      - 7
+      - 13
+      - 16
+      - 23
+      - 66
+      4: 3.10.6
+      5: 0.17.6
+      6: 4.44.0
+      8:
+      - 5
+      13: linux-x86_64
+    m:
+    - 1: train/global_step
+      6:
+      - 3
+    - 1: eval/epoch
+      6:
+      - 3

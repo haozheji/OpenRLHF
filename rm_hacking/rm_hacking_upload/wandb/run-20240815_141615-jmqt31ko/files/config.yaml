@@ -1,0 +1,206 @@
+wandb_version: 1
+
+save_path:
+  desc: null
+  value: ./checkpoint/mistral-instruct-rm-uf
+save_steps:
+  desc: null
+  value: -1
+logging_steps:
+  desc: null
+  value: 1
+eval_steps:
+  desc: null
+  value: -1
+ckpt_path:
+  desc: null
+  value: ./ckpt/checkpoints_rm
+max_ckpt_num:
+  desc: null
+  value: 3
+max_ckpt_mem:
+  desc: null
+  value: 100000000.0
+load_checkpoint:
+  desc: null
+  value: true
+max_norm:
+  desc: null
+  value: 1.0
+gradient_checkpointing:
+  desc: null
+  value: true
+seed:
+  desc: null
+  value: 42
+local_rank:
+  desc: null
+  value: 0
+zero_stage:
+  desc: null
+  value: 3
+bf16:
+  desc: null
+  value: true
+zpg:
+  desc: null
+  value: 1
+adam_offload:
+  desc: null
+  value: false
+flash_attn:
+  desc: null
+  value: true
+grad_accum_dtype:
+  desc: null
+  value: null
+disable_trace_cache:
+  desc: null
+  value: false
+gradient_checkpointing_use_reentrant:
+  desc: null
+  value: false
+disable_fast_tokenizer:
+  desc: null
+  value: false
+pretrain:
+  desc: null
+  value: /workspace/jihaozhe/models/Mistral-7B-Instruct-v0.3
+value_head_prefix:
+  desc: null
+  value: value_head
+load_in_4bit:
+  desc: null
+  value: false
+lora_rank:
+  desc: null
+  value: 0
+lora_alpha:
+  desc: null
+  value: 16
+lora_dropout:
+  desc: null
+  value: 0
+target_modules:
+  desc: null
+  value: all-linear
+max_epochs:
+  desc: null
+  value: 1
+aux_loss_coef:
+  desc: null
+  value: 0
+compute_fp32_loss:
+  desc: null
+  value: false
+margin_loss:
+  desc: null
+  value: false
+learning_rate:
+  desc: null
+  value: 9.0e-06
+micro_train_batch_size:
+  desc: null
+  value: 1
+train_batch_size:
+  desc: null
+  value: 252
+loss:
+  desc: null
+  value: sigmoid
+l2:
+  desc: null
+  value: 0.0
+adam_betas:
+  desc: null
+  value:
+  - 0.9
+  - 0.95
+packing_samples:
+  desc: null
+  value: false
+dataset:
+  desc: null
+  value: /workspace/jihaozhe/data/ultrafeedback-binarized-preferences
+dataset_probs:
+  desc: null
+  value: '1.0'
+prompt_key:
+  desc: null
+  value: null
+chosen_key:
+  desc: null
+  value: chosen_response
+rejected_key:
+  desc: null
+  value: rejected_response
+input_template:
+  desc: null
+  value: 'User: {}
+
+    Assistant: '
+apply_chat_template:
+  desc: null
+  value: false
+tokenizer_chat_template:
+  desc: null
+  value: null
+train_split:
+  desc: null
+  value: train[:-1000]
+eval_split:
+  desc: null
+  value: train[-1000:]
+max_samples:
+  desc: null
+  value: 100000000.0
+max_len:
+  desc: null
+  value: 8192
+use_wandb:
+  desc: null
+  value: 9b9195bb8719975e33f9f0ee70971bd51fe0d331
+wandb_org:
+  desc: null
+  value: null
+wandb_group:
+  desc: null
+  value: null
+wandb_project:
+  desc: null
+  value: rm_hacking
+wandb_run_name:
+  desc: null
+  value: mistral-instruct-rm-uf
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.6
+    cli_version: 0.17.6
+    framework: huggingface
+    huggingface_version: 4.44.0
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1723731376
+    t:
+      1:
+      - 1
+      - 5
+      - 11
+      - 30
+      - 49
+      - 51
+      - 53
+      - 55
+      - 71
+      - 98
+      3:
+      - 13
+      - 16
+      - 23
+      4: 3.10.6
+      5: 0.17.6
+      6: 4.44.0
+      8:
+      - 5
+      13: linux-x86_64
